@@ -34,3 +34,142 @@
 
 from chatui import init_windows, read_command, print_message, end_windows
 
+import sys
+import socket
+import json
+import threading
+
+if len(sys.argv) !=4:
+    print("Usage: python client.py <nickname> <server_address> <port>")
+    sys.exit(1)
+
+nickname = sys.argv[1]
+server_address = sys.argv[2]
+port = int(sys.argv[3])
+
+# connect to server
+s = socket.socket()
+
+try:
+    s.connect((server_address, port))
+    print("Connected to server")
+except:
+    print("Failed to connect to server")
+    sys.exit(1)
+
+
+# initializing the UI
+init_windows()
+
+receive_buffer = b''
+
+def get_next_packet(buffer):
+
+    if len(buffer) < 2:
+        return None, buffer
+
+    payload_length = int.from_bytes(buffer[0:2], byteorder='big')
+
+    total_length = 2 + payload_length
+    if len(buffer) < total_length:
+        return None, buffer
+
+    packet = buffer[2:total_length]
+
+    remaining = buffer[total_length:]
+    return packet, remaining
+
+def send_packet(message_dict):
+    #dict to json
+
+    json_string = json.dumps(message_dict)
+    json_bytes = json_string.encode('utf-8')
+
+    payload_length = len(json_bytes)
+    length_bytes = payload_length.to_bytes(2, byteorder='big')
+
+    packet = length_bytes + json_bytes
+
+    s.sendall(packet)
+
+def receiver():
+    global receive_buffer
+
+    while True:
+        try:
+            data = s.recv(4096)
+
+            if not data:
+                print_message("Server disconnected")
+                break
+
+            receive_buffer += data
+
+            while True:
+                packet_data, receive_buffer = get_next_packet(receive_buffer)
+
+                if packet_data is None:
+                    break
+
+                try:
+                    json_string = packet_data.decode('utf-8')
+                    message = json.loads(json_string)
+                except:
+                    print_message("Parsing error")
+                    continue
+
+                message_type = message.get("type")
+
+                if message_type == "chat":
+                    nick = message.get("nick", "unknown")
+                    text = message.get("message", "")
+                    print_message(f"{nick}: {text}")
+
+                elif message_type == "join":
+                    nick = message.get("nick", "unknown")
+                    print_message(f"*** {nick} has joined the chat")
+
+                elif message_type == "leave":
+                    nick = message.get("nick", "unknown")
+                    print_message(f"{nick} has left the chat")
+
+        except Exception as e:
+            print_message("Disconnected")
+            break
+
+
+# Hello Packet
+
+hello_packet = {
+    "type": "hello",
+    "nick": nickname,
+}
+send_packet(hello_packet)
+
+receiver = threading.Thread(target=receiver, daemon=True)
+receiver.start()
+
+try:
+    while True:
+        # reading user input
+        user_input = read_command(f"{nickname}> ")
+
+        #"/q" quit handling
+        if user_input.strip() == "/q":
+            break
+
+        #sending chat message
+        if user_input.strip():
+            chat_packet = {
+                "type": "chat",
+                "message": user_input
+            }
+            send_packet(chat_packet)
+
+except KeyboardInterrupt:
+    pass
+
+#cleaning on exit
+end_windows()
+s.close()
+print("Hope you had fun chatting! Goodbye, good morning, and good night!")
